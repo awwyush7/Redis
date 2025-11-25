@@ -3,28 +3,24 @@ import time
 
 class Storage:
     def __init__(self):
-        # key → value
         self.storage = {}
-
-        # key → expire_timestamp (int)
         self.ttl_map = {}
-
-        # min-heap of (expire_timestamp, key)
         self.heap = []
+        self.replaying = False
 
-    # internal helper to remove expired keys
+    def _append(self, instruction):
+        with open("aof.txt", "a", encoding="utf-8") as f:
+            f.write(instruction + "\n")
+
     def _cleanup(self):
         now = int(time.time())
-        # Keep popping while top is expired
         while self.heap and self.heap[0][0] <= now:
             expire_ts, key = heapq.heappop(self.heap)
-
-            # Check if this entry is still valid
-            # (Key may have been updated later with a new TTL)
             if self.ttl_map.get(key) == expire_ts:
-                # actual expiry
                 self.storage.pop(key, None)
                 self.ttl_map.pop(key, None)
+                if not self.replaying:
+                    self._append(f"DEL {key}")
 
     def add(self, key, value, ttl_seconds):
         self._cleanup()
@@ -32,49 +28,79 @@ class Storage:
         key = str(key)
         value = str(value)
 
-        # If exists and not expired, return error
         if key in self.storage:
             return {"error": "already exists"}
 
-        # set value
-        self.storage[key] = value
-
-        # compute expire timestamp
         expire_ts = int(time.time()) + ttl_seconds
+
+        self.storage[key] = value
         self.ttl_map[key] = expire_ts
 
-        # push to min heap
         heapq.heappush(self.heap, (expire_ts, key))
+
+        if not self.replaying:
+            self._append(f"SETEX {key} {value} {expire_ts}")
 
         return {"ok": True}
 
     def get(self, key):
         self._cleanup()
-
         key = str(key)
         return self.storage.get(key)
 
     def delete(self, key):
         self._cleanup()
-
         key = str(key)
 
-        if key in self.storage:
-            self.storage.pop(key, None)
-            self.ttl_map.pop(key, None)
-            # heap cleanup is lazy; no need to remove from heap immediately
-            return {"ok": True}
-        return {"error": "not found"}
-    
+        if key not in self.storage:
+            return {"error": "not found"}
+
+        self.storage.pop(key, None)
+        self.ttl_map.pop(key, None)
+
+        if not self.replaying:
+            self._append(f"DEL {key}")
+
+        return {"ok": True}
+
     def update(self, key, value):
-        self._cleanup
+        self._cleanup()
 
-        skey = str(key)
-        svalue = str(value)
+        key = str(key)
+        value = str(value)
 
-        if key in self.ttl_map:
-            self.storage[skey] = svalue
-        else:
-            return {"error" : "expired"}
+        if key not in self.storage:
+            return {"error": "expired or not found"}
+
+        self.storage[key] = value
+
+        if not self.replaying:
+            self._append(f"UPDATE {key} {value}")
+
+        return {"ok": True}
+    
+    def replay_aof(self):
+        self.replaying = True
+        file = open("aof.txt","r")
+        for line in file:
+            content = line.strip().split(" ")
+            action = content[0]
+            match action:
+                case "SETEX":
+                    remaining = int(content[3]) - int(time.time())
+                    if(remaining > 0):
+                        self.storage[content[1]] = content[2]
+                        self.ttl_map[content[1]] = int(content[3])
+                        heapq.heappush(self.heap, (int(content[3]), content[1]))
+                case "DEL":
+                    self.storage.pop(content[1], None)
+                    self.ttl_map.pop(content[1], None)
+                case "UPDATE":
+                    self.storage[content[1]] = content[2]
         
-        return {"ok"  :True}
+        self.replaying = False
+        file.close()
+
+        print("DONE REPLAYING")
+
+
