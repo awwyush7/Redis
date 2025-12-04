@@ -44,13 +44,22 @@ class Storage:
             if not self.replaying:
                 self._append(f"SETABS {key} {value} {expire_ts}")
 
-            return {"ok": True}
+            return {"Status": "Done"}
 
     def get(self, key):
         with self.lock:
             self._cleanup()
             key = str(key)
-            return self.storage.get(key)
+            val = self.storage.get(key)
+            if val is None:
+                return {
+                    "Status":"Done",
+                    "Value" : "Does Not Exist"
+                }
+            return {
+                 "Status":"Done",
+                 "Value" : val
+            }
 
     def delete(self, key):
         with self.lock:
@@ -66,7 +75,7 @@ class Storage:
             if not self.replaying:
                 self._append(f"DEL {key}")
 
-            return {"ok": True}
+            return {"Status": "Done"}
 
     def update(self, key, value):
         with self.lock:
@@ -83,7 +92,7 @@ class Storage:
             if not self.replaying:
                 self._append(f"UPDATE {key} {value}")
 
-            return {"ok": True}
+            return {"Status": "Done"}
     
     def replay_aof(self):
         with self.lock:
