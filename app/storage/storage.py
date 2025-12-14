@@ -3,15 +3,16 @@ import time
 import threading
 
 class Storage:
-    def __init__(self):
+    def __init__(self, node_number):
         self.storage = {}
         self.ttl_map = {}
         self.heap = []
         self.replaying = False
+        self.node =  node_number
         self.lock = threading.Lock()
 
     def _append(self, instruction):
-            with open("aof.txt", "a", encoding="utf-8") as f:
+            with open(f"aof.txt_{self.node}", "a", encoding="utf-8") as f:
                 f.write(instruction + "\n")
 
     def _cleanup(self):
@@ -97,7 +98,7 @@ class Storage:
     def replay_aof(self):
         with self.lock:
             self.replaying = True
-            file = open("aof.txt","r")
+            file = open(f"aof.txt_{self.node}","r")
             for line in file:
                 content = line.strip().split(" ")
                 action = content[0]

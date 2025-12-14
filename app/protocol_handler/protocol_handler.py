@@ -9,8 +9,7 @@ class CommandError(Exception):
     pass
 
 class Disconnect(Exception): 
-    """Raised when a client disconnects."""
-    pass
+    print(f"DICONNECTED w {Exception}")
 
 class ProtocolHandler(object):
     def __init__(self):

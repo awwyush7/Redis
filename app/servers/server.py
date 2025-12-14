@@ -2,27 +2,27 @@ import socket
 import ssl
 import threading
 from app.protocol_handler.protocol_handler import CommandError, ProtocolHandler
-from storage.storage import Storage
+from app.storage.storage import Storage
 import threading
 
 class Error: pass
 class Disconnect(Exception): pass
 
-class Server(object):
-    def __init__(self, host='127.0.0.1', port=9090, max_clients=64):
+class Server():
+    def __init__(self, host, port, node, max_clients=64):
         self._pool = max_clients
         self._host = host
         self._port = port
 
         self._context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-        self._context.load_cert_chain(certfile="app/server/server.crt", keyfile="app/server/server.key")
+        self._context.load_cert_chain(certfile="app/servers/server.crt", keyfile="app/servers/server.key")
 
         self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server.bind((self._host,self._port))
         self._server.listen(self._pool)
 
         self._protocol = ProtocolHandler()
-        self._kv = Storage()
+        self._kv = Storage(node)
 
         self._commands = self.get_commands()
 
