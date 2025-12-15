@@ -2,11 +2,19 @@ import socket
 import ssl
 import sys
 import logging
+import hashlib
+from app.hash.hash_slot import HashSlotManager
 from app.protocol_handler.protocol_handler import Error, ProtocolHandler
 
-
-HOST = '127.0.0.1'
-PORT = 9090
+# --- CONFIGURATION: Define the Shard Endpoints ---
+# IMPORTANT: Ensure your servers are actually running on these ports (9090, 9091, 9092)
+SERVER_ADDRESSES = [
+    ('127.0.0.1', 9090),  # Shard 0
+    ('127.0.0.1', 9091),  # Shard 1
+    ('127.0.0.1', 9092)   # Shard 2
+]
+NUM_SERVERS = len(SERVER_ADDRESSES)
+NUM_SLOTS = 16384 # Standard Redis Cluster slots
 
 # Setup basic logging
 logging.basicConfig(
@@ -15,157 +23,188 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-class Client(object):
-    def __init__(self, host=HOST, port=PORT):
-        self._host = host
-        self._port = port
-        
-        # Two Handlers: One for writing requests, one for reading responses
-        self._ph = ProtocolHandler() 
+# ====================================================================
+# MODIFIED CLASS: ShardedClient
+# ====================================================================
 
-        self._socket = None
-        self._fh = None
+class ShardedClient(object):
+    """
+    Manages connections to multiple Redis-clone servers and routes commands
+    using the HashSlotManager.
+    """
+    def __init__(self):
+        self._connections = {}
+        self._ph = ProtocolHandler() 
         
+        # NEW: Initialize the Hash Slot Manager
+        self.slot_manager = HashSlotManager(SERVER_ADDRESSES)
+
         # SSL Context Setup (Insecure for local testing)
         self._context = ssl.create_default_context()
         self._context.check_hostname = False
         self._context.verify_mode = ssl.CERT_NONE
 
-        self._connect()
+        self._connect_all()
 
-    def _connect(self):
+    def _connect_all(self):
+        """Attempts to establish connections to all configured shards."""
+        for i, (host, port) in enumerate(SERVER_ADDRESSES):
+            self._connect_shard(i, host, port)
+
+    def _connect_shard(self, shard_index, host, port):
+        """Establishes a single SSL connection for a specific shard."""
         try:
-            plain_socket = socket.create_connection((self._host, self._port))
-            logging.debug(f"TCP Connected to {self._host}:{self._port}")
-            self._socket = self._context.wrap_socket(plain_socket, server_hostname=self._host)
-            self._fh = self._socket.makefile('rwb')
-            logging.debug(f"SSL Handshake Successful.")
-            return True
+            plain_socket = socket.create_connection((host, port))
+            ssl_socket = self._context.wrap_socket(plain_socket, server_hostname=host)
+            fh = ssl_socket.makefile('rwb')
+            
+            self._connections[shard_index] = {
+                'socket': ssl_socket,
+                'fh': fh,
+                'host': host,
+                'port': port,
+                'ph': self._ph
+            }
+            logging.debug(f"Shard {shard_index} connected to {host}:{port}")
         except Exception as e:
-            logging.error(f"Connection Failed: {e}")
-            self._socket = None
-            return False
+            logging.error(f"Shard {shard_index} Connection Failed to {host}:{port}: {e}")
+            self._connections[shard_index] = None
 
     def close(self):
-        if self._socket:
-            self._socket.close()
-            logging.debug("Connection closed.")
-
+        """Closes all active shard connections."""
+        for conn_data in self._connections.values():
+            if conn_data and conn_data['socket']:
+                conn_data['socket'].close()
+                
     def execute(self, *args):
         """
-        Generic command execution. Passes raw Python objects to the writer.
+        Generic command execution. Routes command based on the first argument (the key).
         """
+        if not args:
+            raise ValueError("Command cannot be empty.")
+        
+        command = args[0].upper()
+        
+        # 1. Handle commands that go to ALL servers (e.g., FLUSH)
+        if command in ('FLUSH'):
+            results = []
+            for i in range(NUM_SERVERS):
+                results.append(self._execute_on_shard(i, *args))
+            return results
 
-        if not self._fh:
-            if not self._connect():
-                raise Exception("Client is not connected to server.")
+        # 2. Handle commands that require a key (GET, SET, DEL, etc.)
+        if len(args) < 2:
+             raise ValueError(f"Command '{command}' requires a key.")
+        
+        key = args[1] # Key is the second argument
+        
+        # Use the HashSlotManager to find the correct server index
+        shard_index = self.slot_manager.get_server_index_by_key(key)
+        
+        logging.debug(f"Key '{key}' mapped to Slot {self.slot_manager.get_slot(key)} on Shard {shard_index}")
+        
+        return self._execute_on_shard(shard_index, *args)
 
+    def _execute_on_shard(self, shard_index, *args):
+        """Executes the command on the specified shard."""
+        conn_data = self._connections.get(shard_index)
+        
+        if not conn_data or not conn_data['socket']:
+            # A real client would try to reconnect here
+            raise Exception(f"Shard {shard_index} is unavailable.")
+
+        fh = conn_data['fh']
+        ph = conn_data['ph']
+        
         try:
-            # 1. Serialize & Send (The writer figures out the types)
-            resp = self._ph.write_response(self._fh,[*args])
+            # 1. Serialize & Send 
+            ph.write_response(fh, list(args))
             
-            resp = self._ph.handle_request(self._fh)
+            # 2. Read Response
+            resp = ph.handle_request(fh)
 
             # 3. Check for Protocol Level Errors
             if isinstance(resp, Error):
                 raise Exception(f"Server Error: {resp.msg.decode() if isinstance(resp.msg, bytes) else resp.msg}")
 
-            print("Response:", resp)
             return resp
             
         except Exception as e:
-            logging.error(f"Execution Error: {e}")
-            self.close()
+            logging.error(f"Execution Error on Shard {shard_index}: {e}")
+            # Ensure the broken connection is closed
+            conn_data['socket'].close()
+            self._connections[shard_index] = None # Mark connection as failed
             raise e
 
     # --- Command Methods (User-friendly interface) ---
-
     def get(self, key):
-        return self.execute('GET',key)
+        return self.execute('GET', key)
 
     def set(self, key, value):
-        # Value can be int or str, the writer handles the binary type!
-        return self.execute('SET',key, value)
+        return self.execute('SET', key, value)
 
     def delete(self, key):
-        return self.execute('DELETE',key)
+        return self.execute('DELETE', key)
 
     def flush(self):
-        return self.execute('FLUSH')
+        return self.execute('FLUSH') 
 
     def mget(self, *keys):
-        return self.execute('MGET',*keys)
+        raise NotImplementedError("MGET requires splitting keys across shards and merging results.")
 
     def mset(self, *items):
-        return self.execute('MSET',*items)
+        raise NotImplementedError("MSET requires splitting key/value pairs across shards.")
 
 
 if __name__ == '__main__':
-    client = Client()
+    client = ShardedClient()
     
-    if client._socket:
-        print("\n--- Redis Client Interactive Mode ---")
-        print("Type 'QUIT' or 'EXIT' to close the connection.")
+    # Check if any connections were established before continuing
+    if any(client._connections.values()): 
+        print(f"\n--- Redis Client Interactive Mode (Shards: {NUM_SERVERS}, Slots: {NUM_SLOTS}) ---")
+        print("Type 'QUIT' or 'EXIT' to close the connection. Use `SET key value`.")
         
         while True:
             try:
-                # 1. Get user input (e.g., "SET key value" or "GET key")
                 user_input = input("redis-clone> ").strip()
                 
-                if not user_input:
-                    continue
-                
-                # Check for exit commands
-                if user_input.upper() in ("QUIT", "EXIT"):
+                if not user_input or user_input.upper() in ("QUIT", "EXIT"):
                     print("Exiting interactive mode.")
                     break
                 
-                # 2. Parse the command and arguments
-                # This assumes simple, space-separated arguments (like standard Redis CLI)
                 parts = user_input.split()
-                
-                if not parts:
-                    continue
+                if not parts: continue
                 
                 command = parts[0].upper()
                 args = parts[1:]
                 
-                # 3. Dynamic Command Execution
-                
-                # For simplicity, we'll manually handle the common commands
-                # A more robust solution would use Python's built-in reflection (getattr)
-                
                 response = None
                 
+                # --- COMMAND EXECUTION LOGIC ---
                 if command == "SET" and len(args) == 2:
                     response = client.set(args[0], args[1])
                 
                 elif command == "GET" and len(args) == 1:
                     response = client.get(args[0])
                 
-                elif command == "DEL" and len(args) == 1:
+                elif command in ("DEL", "DELETE") and len(args) == 1:
                     response = client.delete(args[0])
-
-                elif command == "mget":
-                    response = client.mget(*args)
                 
-                # --- Add other command handlers here (e.g., LPUSH, HGET) ---
+                elif command == "FLUSH" and len(args) == 0:
+                    response = client.flush()
+
+                elif command in ("MGET", "MSET"):
+                    print(f"(error) {command} is not implemented for sharding.")
+                    continue
                 
                 else:
-                    # If command is not recognized or arguments are wrong
                     print(f"(error) Unknown command or wrong number of arguments for: {command}")
                     continue
 
                 # 4. Display the response
-                # Note: The output format (e.g., 'b'OK') depends on your client's return type.
                 print(f"<- Response: {response}")
                 
-            except EOFError:
-                # Handle Ctrl+D (end of file)
-                print("\nExiting interactive mode.")
-                break
             except Exception as e:
-                # Handle connection errors, protocol errors, etc.
                 print(f"(error) An exception occurred: {e}")
                 
     client.close()
