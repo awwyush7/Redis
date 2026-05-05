@@ -1,15 +1,16 @@
 from io import BytesIO
-from socket import error
+import asyncio
 
 class Error:
-    pass
+    def __init__(self, msg):
+        self.msg = msg
 
 class CommandError(Exception): 
     """Raised when a client command is malformed or invalid."""
     pass
 
 class Disconnect(Exception): 
-    print(f"DICONNECTED w {Exception}")
+    pass
 
 class ProtocolHandler(object):
     def __init__(self):
@@ -21,70 +22,72 @@ class ProtocolHandler(object):
             b'*': self.handle_array,
             b'%': self.handle_dict}
 
-    def handle_request(self, socket_file):
-        first_byte = socket_file.read(1)
+    async def handle_request(self, reader):
+        """
+        Async version: reads from asyncio.StreamReader
+        """
+        first_byte = await reader.read(1)
         if not first_byte:
             raise Disconnect()
 
         try:
             # Delegate to the appropriate handler based on the first byte.
-            return self.handlers[first_byte](socket_file)
+            return await self.handlers[first_byte](reader)
         except KeyError:
             raise CommandError('bad request')
 
-    def handle_simple_string(self, socket_file):
-        print("Handling Simple String")
-        simple_string = socket_file.readline().rstrip(b'\r\n')
-        print(type(simple_string))
+    async def handle_simple_string(self, reader):
+        simple_string = await reader.readline()
+        simple_string = simple_string.rstrip(b'\r\n')
         return simple_string.decode('utf-8')
 
-    def handle_error(self, socket_file):
-        return Error(socket_file.readline().rstrip(b'\r\n'))
+    async def handle_error(self, reader):
+        line = await reader.readline()
+        return Error(line.rstrip(b'\r\n'))
 
-    def handle_integer(self, socket_file):
-        print("Handling Integer")
-        return int(socket_file.readline().rstrip(b'\r\n'))
+    async def handle_integer(self, reader):
+        line = await reader.readline()
+        return int(line.rstrip(b'\r\n'))
 
-    def handle_string(self, socket_file):
-        length = int(socket_file.readline().rstrip(b'\r\n'))
+    async def handle_string(self, reader):
+        line = await reader.readline()
+        length = int(line.rstrip(b'\r\n'))
         if length == -1:
             return None
         length += 2
-        # print(length)
-        return socket_file.read(length)[:-2].decode('utf-8')
+        data = await reader.read(length)
+        return data[:-2].decode('utf-8')
 
-    def handle_array(self, socket_file):
-        num_elements = int(socket_file.readline().rstrip(b'\r\n'))
-        print("Handling Array")
-        return [self.handle_request(socket_file) for _ in range(num_elements)]
+    async def handle_array(self, reader):
+        line = await reader.readline()
+        num_elements = int(line.rstrip(b'\r\n'))
+        return [await self.handle_request(reader) for _ in range(num_elements)]
 
-    def handle_dict(self, socket_file):
-        num_items = int(socket_file.readline().rstrip(b'\r\n'))
-        elements = [self.handle_request(socket_file)
+    async def handle_dict(self, reader):
+        line = await reader.readline()
+        num_items = int(line.rstrip(b'\r\n'))
+        elements = [await self.handle_request(reader)
                     for _ in range(num_items * 2)]
-        print("Handling Dict")
         return dict(zip(elements[::2], elements[1::2]))
     
-    def write_response(self, socket_file, data):
+    async def write_response(self, writer, data):
         """
+        Async version: writes to asyncio.StreamWriter
         Serialize the *entire* command as one RESP array.
         """
         buf = BytesIO()
-        self._write(buf, data)  # <--- WRAP WHOLE COMMAND
+        self._write(buf, data)
         packet = buf.getvalue()
-        print(packet)
-        socket_file.write(packet)
-        socket_file.flush()
+        writer.write(packet)
+        await writer.drain()  # Ensure data is sent
 
     def _write(self, buf, data):
         # STRING → treat as bulk string
         if isinstance(data, str):
-            print("Writing String")
             data = data.encode()
 
         # BYTES → bulk string
         if isinstance(data, bytes):
-            print("Writing Bytes")
             buf.write(b"$%d\r\n" % len(data))
             buf.write(data)
             buf.write(b"\r\n")
@@ -92,18 +95,15 @@ class ProtocolHandler(object):
         
         # INTEGER → RESP integer
         elif isinstance(data, int):
-            print("Writing Integer")
             buf.write(b":%d\r\n" % data)
         
         # LIST or TUPLE → RESP array
         elif isinstance(data, (list, tuple)):
-            print("Writing List")
             buf.write(b"*%d\r\n" % len(data))
             for item in data:
                 self._write(buf, item)
 
         elif isinstance(data, dict):
-            print("Writing Dict")
             buf.write(b"%%%d\r\n" % len(data))
             for k, v in data.items():
                 self._write(buf, k)
@@ -119,4 +119,73 @@ class ProtocolHandler(object):
         else:
             raise ValueError(f"Unserializable type: {type(data)}")
         
+    # ===================================================================
+    # SYNC METHODS FOR CLIENT USE (works with file-like socket objects)
+    # ===================================================================
+    
+    def handle_request_sync(self, fh):
+        """
+        Synchronous version: reads from file-like object (socket.makefile())
+        Used by the client.
+        """
+        first_byte = fh.read(1)
+        if not first_byte:
+            raise Disconnect()
 
+        try:
+            # Map first byte to sync handler
+            sync_handlers = {
+                b'+': self.handle_simple_string_sync,
+                b'-': self.handle_error_sync,
+                b':': self.handle_integer_sync,
+                b'$': self.handle_string_sync,
+                b'*': self.handle_array_sync,
+                b'%': self.handle_dict_sync
+            }
+            return sync_handlers[first_byte](fh)
+        except KeyError:
+            raise CommandError('bad request')
+
+    def handle_simple_string_sync(self, fh):
+        simple_string = fh.readline()
+        simple_string = simple_string.rstrip(b'\r\n')
+        return simple_string.decode('utf-8')
+
+    def handle_error_sync(self, fh):
+        line = fh.readline()
+        return Error(line.rstrip(b'\r\n'))
+
+    def handle_integer_sync(self, fh):
+        line = fh.readline()
+        return int(line.rstrip(b'\r\n'))
+
+    def handle_string_sync(self, fh):
+        line = fh.readline()
+        length = int(line.rstrip(b'\r\n'))
+        if length == -1:
+            return None
+        length += 2
+        data = fh.read(length)
+        return data[:-2].decode('utf-8')
+
+    def handle_array_sync(self, fh):
+        line = fh.readline()
+        num_elements = int(line.rstrip(b'\r\n'))
+        return [self.handle_request_sync(fh) for _ in range(num_elements)]
+
+    def handle_dict_sync(self, fh):
+        line = fh.readline()
+        num_items = int(line.rstrip(b'\r\n'))
+        elements = [self.handle_request_sync(fh) for _ in range(num_items * 2)]
+        return dict(zip(elements[::2], elements[1::2]))
+    
+    def write_response_sync(self, fh, data):
+        """
+        Synchronous version: writes to file-like object (socket.makefile())
+        Used by the client.
+        """
+        buf = BytesIO()
+        self._write(buf, data)
+        packet = buf.getvalue()
+        fh.write(packet)
+        fh.flush()

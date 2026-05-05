@@ -1,53 +1,37 @@
-import socket
-import ssl
-import threading
-from app.protocol_handler.protocol_handler import CommandError, ProtocolHandler
+import asyncio
+from app.protocol_handler.protocol_handler import CommandError, ProtocolHandler, Error, Disconnect
 from app.storage.storage import Storage
-import threading
-
-class Error: pass
-class Disconnect(Exception): pass
 
 class Server():
-    def __init__(self, host, port, node, max_clients=64):
-        self._pool = max_clients
+    def __init__(self, host, port, node):
         self._host = host
         self._port = port
-
-        self._context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-        self._context.load_cert_chain(certfile="app/servers/server.crt", keyfile="app/servers/server.key")
-
-        self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._server.bind((self._host,self._port))
-        self._server.listen(self._pool)
+        self._node = node
 
         self._protocol = ProtocolHandler()
         self._kv = Storage(node)
 
         self._commands = self.get_commands()
 
-        self.start()
+        # Start the async server
+        asyncio.run(self.start())
     
-    # --- Add this method to your Server class ---
-
-    def _handle(self, communication_socket, address):
+    async def _handle(self, reader, writer):
         """
-        Handles the client communication loop, reading requests and writing responses.
+        Async coroutine that handles a single client connection.
+        Multiple of these run concurrently in the event loop.
         """
-        # 1. Wrap the socket for the ProtocolHandler
-        # We use makefile() to get a file-like object from the socket.
-        # This is crucial because ProtocolHandler uses readline() and read().
-        socket_file = communication_socket.makefile('rwb')
+        address = writer.get_extra_info('peername')
+        print(f"New connection from {address}")
 
         try:
             while True:
                 try:
-                    # DESERIALIZATION: ProtocolHandler reads bytes from the socket_file,
-                    # determines the data type, and converts it into a Python list (the command).
-                    request = self._protocol.handle_request(socket_file)
+                    # DESERIALIZATION: Read and parse the request
+                    request = await self._protocol.handle_request(reader)
                 
                 except Disconnect:
-                    # Client closed the connection
+                    # Client closed the connection gracefully
                     break
                 
                 except CommandError as e:
@@ -56,51 +40,53 @@ class Server():
                 
                 else:
                     try:
-                        # EXECUTION: Get the response by dispatching the command to the Storage layer
+                        # EXECUTION: Get the response by dispatching to Storage
                         response = self.get_response(request)
                     except CommandError as e:
-                        # Command syntax error (e.g., MGET with wrong number of args)
+                        # Command syntax error
                         response = Error(str(e).encode('utf-8'))
                     
-                # SERIALIZATION: ProtocolHandler takes the Python object (response)
-                self._protocol.write_response(socket_file, response)
+                # SERIALIZATION: Write the response back to client
+                await self._protocol.write_response(writer, response)
 
-        except socket.error as e:
-            # Catch socket level errors (e.g., connection reset)
-            print(f"Socket error with {address}: {e}")
+        except Exception as e:
+            import traceback
+            print(f"Error with {address}: {e}")
+            print(f"Exception type: {type(e).__name__}")
+            print(f"Traceback:")
+            traceback.print_exc()
             
         finally:
             # Ensure the connection is closed
-            communication_socket.close()
+            writer.close()
+            await writer.wait_closed()
             print(f"Connection with {address} closed.")
 
-    def start(self):
-        while True:
-            print("Server Listening")
-            # 1. Accept the plain TCP connection
-            plain_socket, address = self._server.accept()
-            print(f"Communication from {address} accepted")
-            
-            # 2. WRAP the individual communication socket with SSL/TLS
-            # This is where the TLS handshake happens, and the new secure socket is created.
-            communication_socket = self._context.wrap_socket(plain_socket, server_side=True)
-            
-            # 3. Proceed with the secure socket
-            thread = threading.Thread(
-                target=self._handle, 
-                args=(communication_socket, address), 
-                daemon=True
-            )
-            thread.start()
+    async def start(self):
+        """
+        Start the async server. This method runs the event loop.
+        Each client connection spawns a new coroutine (_handle).
+        """
+        server = await asyncio.start_server(
+            self._handle, 
+            self._host, 
+            self._port
+        )
+        
+        addr = server.sockets[0].getsockname()
+        print(f"Shard {self._node} serving on {addr} (async event loop)")
+
+        async with server:
+            await server.serve_forever()
 
     def get_commands(self):
         return {
             'GET': self.get,
             'SET': self.set,
             'DELETE': self.delete,
-            # 'FLUSH': self.flush,
             'MGET': self.mget,
-            'MSET': self.mset}
+            'MSET': self.mset,
+            'INFO': self.info}
 
     def get_response(self, data):
         if not isinstance(data, list):
@@ -131,10 +117,14 @@ class Server():
         return [self._kv.get(key) for key in keys]
 
     def mset(self, *items):
-        data = zip(items[::2], items[1::2])
+        data = list(zip(items[::2], items[1::2]))
         for key, value in data:
             self._kv.add(key,value,ttl_seconds=30000)
         return len(data)
+    
+    def info(self):
+        """Return shard metrics"""
+        return self._kv.get_metrics()
     
 if __name__ == '__main__':
     server = Server()
