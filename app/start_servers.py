@@ -1,11 +1,9 @@
-
-# 💡 Corrected app/start_servers.py
-
 from .servers.server import Server
 import multiprocessing
 import time
 import os
 import platform
+import asyncio
 
 def start_server_instance(host, port, node):
     """Function to create and start a single server instance."""
@@ -21,6 +19,7 @@ def start_server_instance(host, port, node):
     
     print(f"Starting server shard {node} on {host}:{port} (async event loop)")
     server = Server(host=host, port=port, node=node)
+    asyncio.run(server.run())
     # Server.start() is now async and runs forever
 
 if __name__ == '__main__':
