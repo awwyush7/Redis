@@ -1,5 +1,7 @@
 import heapq
 import time
+from datetime import datetime
+from io import StringIO
 
 class Storage:
     def __init__(self, node_number):
@@ -23,10 +25,14 @@ class Storage:
             'keys_count': 0,
             'expired_keys': 0
         }
+        self._buffer = StringIO()
+        self._last_flushed = None
 
-    def _append(self, instruction):
-            with open(f"aof.txt_{self.node}", "a", encoding="utf-8") as f:
-                f.write(instruction + "\n")
+    # def _append(self, instruction):
+            # with open(f"aof.txt_{self.node}", "a", encoding="utf-8") as f:
+                # f.write(instruction + "\n")
+                # self._buffer = self._buffer + 
+                
 
     def _cleanup(self):
             now = int(time.time())
@@ -36,8 +42,8 @@ class Storage:
                     self.storage.pop(key, None)
                     self.ttl_map.pop(key, None)
                     self.metrics['expired_keys'] += 1
-                    if not self.replaying:
-                        self._append(f"DEL {key}")
+                    # if not self.replaying:
+                        # self._append(f"DEL {key}")
 
     def add(self, key, value, ttl_seconds):
         # LOCK REMOVED: Only one coroutine executes at a time
@@ -58,8 +64,8 @@ class Storage:
 
         heapq.heappush(self.heap, (expire_ts, key))
 
-        if not self.replaying:
-            self._append(f"SETABS {key} {value} {expire_ts}")
+        # if not self.replaying:
+            # self._append(f"SETABS {key} {value} {expire_ts}")
 
         # Update metrics
         self.metrics['total_ops'] += 1
@@ -116,8 +122,8 @@ class Storage:
         self.storage.pop(key, None)
         self.ttl_map.pop(key, None)
 
-        if not self.replaying:
-            self._append(f"DEL {key}")
+        # if not self.replaying:
+            # self._append(f"DEL {key}")
 
         # Update metrics
         self.metrics['total_ops'] += 1
@@ -142,38 +148,49 @@ class Storage:
 
         self.storage[key] = value
 
-        if not self.replaying:
-            self._append(f"UPDATE {key} {value}")
+        # if not self.replaying:
+            # self._append(f"UPDATE {key} {value}")
 
         return {"Status": "Done"}
-    
-    def replay_aof(self):
-        # LOCK REMOVED: Single-threaded async event loop
-        self.replaying = True
-        try:
-            file = open(f"aof.txt_{self.node}", "r")
-            for line in file:
-                content = line.strip().split(" ")
-                action = content[0]
-                match action:
-                    case "SETABS":
-                        remaining = int(content[3]) - int(time.time())
-                        if(remaining > 0):
-                            self.storage[content[1]] = content[2]
-                            self.ttl_map[content[1]] = int(content[3])
-                            heapq.heappush(self.heap, (int(content[3]), content[1]))
-                    case "DEL":
-                        self.storage.pop(content[1], None)
-                        self.ttl_map.pop(content[1], None)
-                    case "UPDATE":
-                        self.storage[content[1]] = content[2]
-            
-            self.replaying = False
-            file.close()
-            print("DONE REPLAYING")
-        except FileNotFoundError:
-            self.replaying = False
-            pass
+
+    def get_expire_ts(self, key):
+        self._cleanup()
+        return self.ttl_map.get(str(key))
+
+    def get_value(self, key):
+        self._cleanup()
+        return self.storage.get(str(key))
+
+    def snapshot_items(self):
+        self._cleanup()
+        snapshot = []
+        for key, value in self.storage.items():
+            expire_ts = self.ttl_map.get(key)
+            if expire_ts is None:
+                continue
+            snapshot.append((key, value, expire_ts))
+        return snapshot
+
+    def restore_with_expiry(self, key, value, expire_ts):
+        now = int(time.time())
+        if expire_ts <= now:
+            return
+
+        key = str(key)
+        value = str(value)
+        self.storage[key] = value
+        self.ttl_map[key] = expire_ts
+        heapq.heappush(self.heap, (expire_ts, key))
+        self.metrics['keys_count'] = len(self.storage)
+
+    def restore_with_ttl(self, key, value, ttl_seconds):
+        self.restore_with_expiry(key, value, int(time.time()) + ttl_seconds)
+
+    def restore_delete(self, key):
+        key = str(key)
+        self.storage.pop(key, None)
+        self.ttl_map.pop(key, None)
+        self.metrics['keys_count'] = len(self.storage)
     
     def get_metrics(self):
         """Return current shard metrics"""
