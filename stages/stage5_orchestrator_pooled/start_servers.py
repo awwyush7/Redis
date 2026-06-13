@@ -1,6 +1,6 @@
-from .servers.orchestrator import Orchestrator
-from .servers.server import Server
-from .servers.transport import orchestrator_endpoint, shard_endpoint
+from app.servers.orchestrator import Orchestrator
+from app.servers.server import Server
+from app.servers.transport import orchestrator_endpoint, shard_endpoint
 import multiprocessing
 import os
 import platform

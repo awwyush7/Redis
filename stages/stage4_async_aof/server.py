@@ -4,7 +4,6 @@ from datetime import datetime
 
 from app.persistence.aof_manager import AOFManager
 from app.protocol_handler.protocol_handler import CommandError, ProtocolHandler, Error, Disconnect
-from app.servers.transport import Endpoint, cleanup_endpoint
 from app.storage.storage import Storage
 
 
@@ -21,7 +20,6 @@ class Server:
         host: str,
         port: int,
         node: int,
-        endpoint: Endpoint | None = None,
         flush_interval: float = 1.0,
         aof_dir: str = "./data",
         fsync_every_flush: bool = False,
@@ -29,7 +27,6 @@ class Server:
         self._host = host
         self._port = port
         self._node = node
-        self._endpoint = endpoint or Endpoint(kind="tcp", host=host, port=port)
 
         self._protocol = ProtocolHandler()
         self._kv = Storage(node)
@@ -59,9 +56,10 @@ class Server:
         # Start periodic flush loop
         self._flush_task = asyncio.create_task(self._flush_loop(), name=f"flush-loop-shard-{self._node}")
 
-        cleanup_endpoint(self._endpoint)
-        self._server = await self._start_server()
-        print(f"Shard {self._node} serving on internal endpoint {self._endpoint.describe()} (async event loop)")
+        # Start TCP server
+        self._server = await asyncio.start_server(self._handle, self._host, self._port)
+        addr = self._server.sockets[0].getsockname()
+        print(f"Shard {self._node} serving on {addr} (async event loop)")
         print(f"Shard {self._node} AOF => {self._aof.aof_path} | flush_interval={self._flush_interval}s")
 
         try:
@@ -80,12 +78,6 @@ class Server:
                     await self._flush_task
 
             await self._aof.shutdown(self._kv)
-            cleanup_endpoint(self._endpoint)
-
-    async def _start_server(self):
-        if self._endpoint.kind == "unix":
-            return await asyncio.start_unix_server(self._handle, path=self._endpoint.path)
-        return await asyncio.start_server(self._handle, self._endpoint.host, self._endpoint.port)
 
     # ----------------------------
     # Client handling

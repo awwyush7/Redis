@@ -86,9 +86,6 @@ class ProtocolHandler(object):
         if isinstance(data, str):
             data = data.encode()
 
-        if isinstance(data, float):
-            data = repr(data).encode()
-
         # BYTES → bulk string
         if isinstance(data, bytes):
             buf.write(b"$%d\r\n" % len(data))

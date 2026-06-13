@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PyRedis — Async Sharded KV Store</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg:      #080808;
+    --surface: #0d0d0d;
+    --card:    #111111;
+    --border:  #1a1a1a;
+    --border2: #242424;
+    --text:    #e8e8e8;
+    --muted:   #555;
+    --dim:     #2a2a2a;
+    --A:  #ef4444;
+    --B:  #f59e0b;
+    --C:  #10b981;
+    --D:  #8b5cf6;
+    --mono: 'JetBrains Mono', monospace;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+
+  a { color: inherit; text-decoration: none; }
+
+  /* ── layout ── */
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+
+  /* ── header ── */
+  header {
+    border-bottom: 1px solid var(--border);
+    padding: 28px 0 24px;
+  }
+  header .wrap { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+
+  .logo {
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .logo-name {
+    font-size: 22px; font-weight: 700; letter-spacing: -0.5px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .logo-dot { width: 8px; height: 8px; background: var(--C); border-radius: 50%; display: inline-block; }
+  .logo-sub { color: var(--muted); font-size: 11px; font-weight: 400; letter-spacing: 0.5px; }
+
+  .header-links { display: flex; gap: 16px; align-items: center; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    border: 1px solid var(--border2); border-radius: 4px;
+    padding: 5px 10px; font-size: 11px; color: var(--muted);
+    transition: border-color .2s, color .2s;
+  }
+  .badge:hover { border-color: var(--border2 ); color: var(--text); }
+  .badge svg { flex-shrink: 0; }
+
+  /* ── sections ── */
+  section { padding: 40px 0; border-bottom: 1px solid var(--border); }
+  .section-label {
+    font-size: 10px; font-weight: 600; letter-spacing: 2px; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 20px;
+  }
+
+  /* ── arch timeline ── */
+  .arch-track {
+    display: flex; gap: 0; overflow-x: auto; padding-bottom: 4px;
+    scrollbar-width: thin; scrollbar-color: var(--dim) transparent;
+  }
+  .arch-track::-webkit-scrollbar { height: 4px; }
+  .arch-track::-webkit-scrollbar-thumb { background: var(--dim); border-radius: 2px; }
+
+  .arch-card {
+    flex: 0 0 auto; width: 200px;
+    border: 1px solid var(--border);
+    border-right: none;
+    padding: 16px;
+    position: relative;
+  }
+  .arch-card:last-child { border-right: 1px solid var(--border); border-radius: 0 4px 4px 0; }
+  .arch-card:first-child { border-radius: 4px 0 0 4px; }
+  .arch-card.active {
+    border-color: var(--C);
+    background: rgba(16, 185, 129, 0.04);
+  }
+  .arch-card.active::after {
+    content: '★ current';
+    position: absolute; top: 8px; right: 8px;
+    font-size: 9px; color: var(--C); font-weight: 600; letter-spacing: 1px;
+  }
+
+  .arch-num {
+    font-size: 10px; color: var(--muted); font-weight: 600;
+    letter-spacing: 1px; margin-bottom: 8px;
+  }
+  .arch-title { font-size: 12px; font-weight: 600; margin-bottom: 8px; line-height: 1.4; }
+  .arch-tags { display: flex; flex-direction: column; gap: 3px; }
+  .arch-tag {
+    font-size: 10px; color: var(--muted);
+    display: flex; align-items: center; gap: 5px;
+  }
+  .arch-tag::before { content: '›'; color: var(--dim); }
+
+  .arch-arrow {
+    flex: 0 0 auto; display: flex; align-items: center;
+    color: var(--dim); font-size: 16px; padding: 0 4px;
+    display: none; /* handled by border-right absence */
+  }
+
+  /* ── controls ── */
+  .controls {
+    display: flex; gap: 32px; align-items: flex-end; flex-wrap: wrap;
+  }
+  .control-group { display: flex; flex-direction: column; gap: 8px; }
+  .control-label { font-size: 10px; font-weight: 600; letter-spacing: 1.5px; text-transform: uppercase; color: var(--muted); }
+  .control-row { display: flex; align-items: center; gap: 12px; }
+
+  input[type=range] {
+    -webkit-appearance: none;
+    width: 160px; height: 4px;
+    background: var(--dim); border-radius: 2px; outline: none; cursor: pointer;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: var(--text); cursor: pointer;
+    transition: background .15s;
+  }
+  input[type=range]:hover::-webkit-slider-thumb { background: var(--C); }
+  .range-val { font-size: 13px; font-weight: 600; min-width: 36px; color: var(--text); }
+
+  .btn-run {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--text); color: var(--bg);
+    border: none; border-radius: 4px; padding: 9px 20px;
+    font-family: var(--mono); font-size: 12px; font-weight: 700;
+    letter-spacing: 0.5px; cursor: pointer;
+    transition: opacity .15s, transform .1s;
+  }
+  .btn-run:hover { opacity: .88; }
+  .btn-run:active { transform: scale(.97); }
+  .btn-run:disabled { opacity: .35; cursor: not-allowed; }
+  .btn-run .icon { font-size: 14px; }
+
+  /* ── scenario cards ── */
+  .scenario-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+  }
+  @media (max-width: 800px) { .scenario-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 480px) { .scenario-grid { grid-template-columns: 1fr; } }
+
+  .sc-card {
+    border: 1px solid var(--border);
+    border-radius: 6px; padding: 18px;
+    transition: border-color .3s;
+    position: relative; overflow: hidden;
+  }
+  .sc-card::before {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0; height: 2px;
+    background: var(--color);
+    opacity: 0; transition: opacity .3s;
+  }
+  .sc-card.running { border-color: var(--color); }
+  .sc-card.running::before { opacity: 1; }
+  .sc-card.done { border-color: var(--color); }
+  .sc-card.done::before { opacity: 1; }
+
+  .sc-id {
+    font-size: 28px; font-weight: 700; color: var(--color);
+    line-height: 1; margin-bottom: 10px;
+  }
+  .sc-name { font-size: 11px; font-weight: 600; margin-bottom: 4px; }
+  .sc-detail { font-size: 10px; color: var(--muted); line-height: 1.5; margin-bottom: 14px; }
+
+  .sc-status {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 10px; font-weight: 600; letter-spacing: 1px;
+    text-transform: uppercase; color: var(--muted);
+    margin-bottom: 14px; height: 16px;
+  }
+  .sc-status .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--dim);
+    flex-shrink: 0;
+  }
+  .sc-card.running .sc-status { color: var(--color); }
+  .sc-card.running .dot {
+    background: var(--color);
+    animation: pulse 1s ease-in-out infinite;
+  }
+  .sc-card.done .sc-status { color: var(--color); }
+  .sc-card.done .dot { background: var(--color); }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: .4; transform: scale(.7); }
+  }
+
+  .sc-metrics { display: flex; flex-direction: column; gap: 6px; }
+  .sc-metric-row { display: flex; justify-content: space-between; align-items: baseline; }
+  .sc-metric-key { font-size: 10px; color: var(--muted); }
+  .sc-metric-val { font-size: 14px; font-weight: 600; color: var(--text); }
+  .sc-metric-val.big { font-size: 22px; font-weight: 700; color: var(--color); }
+  .sc-metric-unit { font-size: 10px; color: var(--muted); margin-left: 2px; }
+  .sc-placeholder { color: var(--dim); font-size: 20px; font-weight: 700; }
+
+  /* ── charts ── */
+  .charts-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 24px;
+  }
+  @media (max-width: 700px) { .charts-grid { grid-template-columns: 1fr; } }
+
+  .chart-box {
+    border: 1px solid var(--border); border-radius: 6px; padding: 20px;
+  }
+  .chart-title { font-size: 11px; font-weight: 600; color: var(--muted); margin-bottom: 16px; letter-spacing: 0.5px; }
+  .chart-wrap { position: relative; height: 200px; }
+
+  /* ── comparison table ── */
+  #results-table { display: none; }
+  .table-wrap { overflow-x: auto; }
+  table {
+    width: 100%; border-collapse: collapse;
+    font-size: 12px;
+  }
+  thead tr { border-bottom: 1px solid var(--border2); }
+  th {
+    text-align: left; padding: 8px 16px;
+    font-size: 10px; font-weight: 600; color: var(--muted);
+    letter-spacing: 1px; text-transform: uppercase;
+    white-space: nowrap;
+  }
+  td {
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover td { background: rgba(255,255,255,.02); }
+
+  .td-id { font-size: 16px; font-weight: 700; }
+  .td-name { font-weight: 500; }
+  .td-rps { font-weight: 700; font-size: 14px; }
+  .td-speedup {
+    font-size: 11px; font-weight: 600; padding: 2px 8px;
+    border-radius: 3px; display: inline-block;
+  }
+
+  /* ── footer ── */
+  footer {
+    padding: 28px 0;
+    text-align: center;
+    font-size: 10px; color: var(--muted);
+    letter-spacing: 0.5px;
+  }
+
+  /* ── shimmer for loading ── */
+  @keyframes shimmer {
+    0% { background-position: -400px 0; }
+    100% { background-position: 400px 0; }
+  }
+  .shimmer {
+    background: linear-gradient(90deg, var(--dim) 25%, var(--card) 50%, var(--dim) 75%);
+    background-size: 800px 100%;
+    animation: shimmer 1.5s infinite linear;
+    border-radius: 3px;
+    height: 14px;
+  }
+
+  /* ── status bar ── */
+  .status-bar {
+    font-size: 10px; color: var(--muted);
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 12px; min-height: 20px;
+  }
+  .status-bar .spinner {
+    display: none; width: 10px; height: 10px;
+    border: 1.5px solid var(--dim);
+    border-top-color: var(--C);
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+  }
+  .status-bar.active .spinner { display: block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<!-- ─── HEADER ─────────────────────────────────────────────────────────── -->
+<header>
+  <div class="wrap">
+    <div class="logo">
+      <div class="logo-name">
+        <span class="logo-dot"></span>
+        PyRedis
+      </div>
+      <div class="logo-sub">async · sharded · persistent · key-value store in Python</div>
+    </div>
+    <div class="header-links">
+      <a href="https://github.com/awwyush7/Redis" target="_blank" rel="noopener" class="badge">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
+        </svg>
+        awwyush7/Redis
+      </a>
+    </div>
+  </div>
+</header>
+
+<!-- ─── ARCHITECTURE ───────────────────────────────────────────────────── -->
+<section id="arch">
+  <div class="wrap">
+    <div class="section-label">Architecture Evolution</div>
+    <div class="arch-track">
+
+      <div class="arch-card">
+        <div class="arch-num">STAGE 01</div>
+        <div class="arch-title">Thread-per-connection</div>
+        <div class="arch-tags">
+          <span class="arch-tag">blocking sockets</span>
+          <span class="arch-tag">threading.Lock</span>
+          <span class="arch-tag">single server</span>
+          <span class="arch-tag">SSL / TLS</span>
+        </div>
+      </div>
+
+      <div class="arch-card">
+        <div class="arch-num">STAGE 02</div>
+        <div class="arch-title">Multi-server + Client Routing</div>
+        <div class="arch-tags">
+          <span class="arch-tag">3 shards as threads</span>
+          <span class="arch-tag">hash slot router</span>
+          <span class="arch-tag">client-side topology</span>
+        </div>
+      </div>
+
+      <div class="arch-card">
+        <div class="arch-num">STAGE 03</div>
+        <div class="arch-title">Async Multi-process</div>
+        <div class="arch-tags">
+          <span class="arch-tag">asyncio event loop</span>
+          <span class="arch-tag">multiprocessing</span>
+          <span class="arch-tag">lock-free shards</span>
+        </div>
+      </div>
+
+      <div class="arch-card">
+        <div class="arch-num">STAGE 04</div>
+        <div class="arch-title">+ AOF Persistence</div>
+        <div class="arch-tags">
+          <span class="arch-tag">append-only file</span>
+          <span class="arch-tag">background flush</span>
+          <span class="arch-tag">snapshot restore</span>
+        </div>
+      </div>
+
+      <div class="arch-card active">
+        <div class="arch-num">STAGE 05</div>
+        <div class="arch-title">Orchestrator + Connection Pool</div>
+        <div class="arch-tags">
+          <span class="arch-tag">server-side routing</span>
+          <span class="arch-tag">LIFO conn pool</span>
+          <span class="arch-tag">Unix/TCP transport</span>
+          <span class="arch-tag">async client</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ─── BENCHMARK CONTROLS ────────────────────────────────────────────── -->
+<section id="bench">
+  <div class="wrap">
+    <div class="section-label">Benchmark</div>
+    <div class="controls">
+      <div class="control-group">
+        <div class="control-label">Requests</div>
+        <div class="control-row">
+          <input type="range" id="n-slider" min="100" max="2000" step="100" value="500">
+          <span class="range-val" id="n-val">500</span>
+        </div>
+      </div>
+      <div class="control-group">
+        <div class="control-label">Concurrency (C &amp; D)</div>
+        <div class="control-row">
+          <input type="range" id="c-slider" min="2" max="50" step="2" value="20">
+          <span class="range-val" id="c-val">20</span>
+        </div>
+      </div>
+      <div class="control-group">
+        <div class="control-label">&nbsp;</div>
+        <button class="btn-run" id="run-btn">
+          <span class="icon">▶</span> Run Benchmark
+        </button>
+      </div>
+    </div>
+    <div class="status-bar" id="status-bar">
+      <div class="spinner"></div>
+      <span id="status-text">Idle — configure and run</span>
+    </div>
+  </div>
+</section>
+
+<!-- ─── LIVE SCENARIO CARDS ───────────────────────────────────────────── -->
+<section id="scenarios">
+  <div class="wrap">
+    <div class="section-label">Scenarios</div>
+    <div class="scenario-grid" id="sc-grid">
+      <!-- injected by JS -->
+    </div>
+  </div>
+</section>
+
+<!-- ─── CHARTS ────────────────────────────────────────────────────────── -->
+<section id="charts-section">
+  <div class="wrap">
+    <div class="section-label">Live Results</div>
+    <div class="charts-grid">
+      <div class="chart-box">
+        <div class="chart-title">THROUGHPUT — req / s (higher is better)</div>
+        <div class="chart-wrap"><canvas id="rps-chart"></canvas></div>
+      </div>
+      <div class="chart-box">
+        <div class="chart-title">LATENCY — p50 / p99 ms (lower is better)</div>
+        <div class="chart-wrap"><canvas id="lat-chart"></canvas></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── COMPARISON TABLE ──────────────────────────────────────────────── -->
+<section id="results-table">
+  <div class="wrap">
+    <div class="section-label">Final Comparison</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th>Scenario</th>
+            <th>Req / s</th>
+            <th>p50 ms</th>
+            <th>p99 ms</th>
+            <th>Mean ms</th>
+            <th>Speedup</th>
+          </tr>
+        </thead>
+        <tbody id="table-body"></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ─── FOOTER ────────────────────────────────────────────────────────── -->
+<footer>
+  <div class="wrap">
+    built by Ayush Pandey &nbsp;·&nbsp; Python &nbsp;·&nbsp; asyncio &nbsp;·&nbsp; FastAPI &nbsp;·&nbsp; SSE
+  </div>
+</footer>
+
+<script>
+// ── CONFIG ────────────────────────────────────────────────────────────────
+const COLORS = { A: '#ef4444', B: '#f59e0b', C: '#10b981', D: '#8b5cf6' };
+
+// ── RANGE SLIDERS ─────────────────────────────────────────────────────────
+const nSlider = document.getElementById('n-slider');
+const cSlider = document.getElementById('c-slider');
+const nVal    = document.getElementById('n-val');
+const cVal    = document.getElementById('c-val');
+nSlider.addEventListener('input', () => nVal.textContent = nSlider.value);
+cSlider.addEventListener('input', () => cVal.textContent = cSlider.value);
+
+// ── STATE ─────────────────────────────────────────────────────────────────
+let scenarios = [];
+let results   = {};
+let rpsChart  = null;
+let latChart  = null;
+let running   = false;
+
+// ── BUILD EMPTY SCENARIO CARDS ────────────────────────────────────────────
+function buildCards(scenarioList, concurrency) {
+  const grid = document.getElementById('sc-grid');
+  grid.innerHTML = '';
+  scenarioList.forEach(sc => {
+    const div = document.createElement('div');
+    div.className = 'sc-card';
+    div.id = `sc-${sc.id}`;
+    div.style.setProperty('--color', COLORS[sc.id]);
+
+    const detailText = sc.id === 'C' || sc.id === 'D'
+      ? sc.detail.replace('N', concurrency)
+      : sc.detail;
+
+    div.innerHTML = `
+      <div class="sc-id">${sc.id}</div>
+      <div class="sc-name">${sc.name}</div>
+      <div class="sc-detail">${detailText}</div>
+      <div class="sc-status" id="st-${sc.id}">
+        <span class="dot"></span>
+        <span class="st-text">pending</span>
+      </div>
+      <div class="sc-metrics" id="m-${sc.id}">
+        <div class="sc-metric-row">
+          <span class="sc-metric-val big sc-placeholder">—</span>
+        </div>
+      </div>`;
+    grid.appendChild(div);
+  });
+}
+
+// ── INIT CHARTS ───────────────────────────────────────────────────────────
+function initCharts(labels) {
+  const cfg = {
+    responsive: true, maintainAspectRatio: false,
+    animation: { duration: 400 },
+    plugins: { legend: { display: false } },
+    scales: {
+      x: {
+        ticks: { color: '#555', font: { family: 'JetBrains Mono', size: 11 } },
+        grid:  { color: '#1a1a1a' }
+      },
+      y: {
+        ticks: { color: '#555', font: { family: 'JetBrains Mono', size: 11 } },
+        grid:  { color: '#1a1a1a' }
+      }
+    }
+  };
+
+  if (rpsChart) rpsChart.destroy();
+  if (latChart) latChart.destroy();
+
+  rpsChart = new Chart(document.getElementById('rps-chart').getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        data: labels.map(() => 0),
+        backgroundColor: labels.map(l => COLORS[l] + '33'),
+        borderColor:     labels.map(l => COLORS[l]),
+        borderWidth: 2,
+        borderRadius: 3,
+      }]
+    },
+    options: { ...cfg, scales: { ...cfg.scales, y: { ...cfg.scales.y, beginAtZero: true } } }
+  });
+
+  latChart = new Chart(document.getElementById('lat-chart').getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'p50',
+          data: labels.map(() => 0),
+          backgroundColor: labels.map(l => COLORS[l] + '55'),
+          borderColor:     labels.map(l => COLORS[l]),
+          borderWidth: 2, borderRadius: 3,
+        },
+        {
+          label: 'p99',
+          data: labels.map(() => 0),
+          backgroundColor: labels.map(l => COLORS[l] + '22'),
+          borderColor:     labels.map(l => COLORS[l] + '88'),
+          borderWidth: 1, borderRadius: 3,
+          borderDash: [4, 4],
+        }
+      ]
+    },
+    options: {
+      ...cfg,
+      plugins: {
+        legend: {
+          display: true,
+          labels: { color: '#555', font: { family: 'JetBrains Mono', size: 10 } }
+        }
+      },
+      scales: { ...cfg.scales, y: { ...cfg.scales.y, beginAtZero: true } }
+    }
+  });
+}
+
+// ── UPDATE CARD ───────────────────────────────────────────────────────────
+function setCardRunning(id) {
+  const card = document.getElementById(`sc-${id}`);
+  const st   = document.getElementById(`st-${id}`);
+  card.className = 'sc-card running';
+  st.querySelector('.st-text').textContent = 'running';
+}
+
+function setCardDone(id, m) {
+  const card = document.getElementById(`sc-${id}`);
+  const st   = document.getElementById(`st-${id}`);
+  card.className = 'sc-card done';
+  st.querySelector('.st-text').textContent = 'done';
+
+  document.getElementById(`m-${id}`).innerHTML = `
+    <div class="sc-metric-row">
+      <span class="sc-metric-key">req/s</span>
+      <span>
+        <span class="sc-metric-val big">${m.rps.toLocaleString()}</span>
+      </span>
+    </div>
+    <div class="sc-metric-row">
+      <span class="sc-metric-key">p50</span>
+      <span class="sc-metric-val">${m.p50}<span class="sc-metric-unit">ms</span></span>
+    </div>
+    <div class="sc-metric-row">
+      <span class="sc-metric-key">p99</span>
+      <span class="sc-metric-val">${m.p99}<span class="sc-metric-unit">ms</span></span>
+    </div>
+    <div class="sc-metric-row">
+      <span class="sc-metric-key">mean</span>
+      <span class="sc-metric-val">${m.mean}<span class="sc-metric-unit">ms</span></span>
+    </div>`;
+}
+
+// ── UPDATE CHARTS ─────────────────────────────────────────────────────────
+function updateCharts(id, m) {
+  const idx = scenarios.findIndex(s => s.id === id);
+  if (idx < 0) return;
+
+  rpsChart.data.datasets[0].data[idx] = m.rps;
+  rpsChart.update();
+
+  latChart.data.datasets[0].data[idx] = m.p50;
+  latChart.data.datasets[1].data[idx] = m.p99;
+  latChart.update();
+}
+
+// ── BUILD TABLE ───────────────────────────────────────────────────────────
+function buildTable(allResults) {
+  const sec  = document.getElementById('results-table');
+  const body = document.getElementById('table-body');
+  const base = allResults['A']?.rps || 1;
+
+  body.innerHTML = '';
+  scenarios.forEach(sc => {
+    const m = allResults[sc.id];
+    if (!m) return;
+
+    const speedup = (m.rps / base).toFixed(2);
+    const bg = m.rps >= base * 5 ? COLORS[sc.id] + '22' :
+               m.rps >= base * 1.5 ? COLORS[sc.id] + '11' : '';
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><span class="td-id" style="color:${COLORS[sc.id]}">${sc.id}</span></td>
+      <td class="td-name">${sc.name}</td>
+      <td class="td-rps" style="color:${COLORS[sc.id]}">${m.rps.toLocaleString()}</td>
+      <td>${m.p50}</td>
+      <td>${m.p99}</td>
+      <td>${m.mean}</td>
+      <td><span class="td-speedup" style="background:${bg};color:${COLORS[sc.id]}">${speedup}×</span></td>`;
+    body.appendChild(tr);
+  });
+
+  sec.style.display = 'block';
+  sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// ── STATUS HELPERS ────────────────────────────────────────────────────────
+function setStatus(msg, active = false) {
+  const bar = document.getElementById('status-bar');
+  document.getElementById('status-text').textContent = msg;
+  bar.classList.toggle('active', active);
+}
+
+// ── SSE RUNNER ────────────────────────────────────────────────────────────
+let _activeEs = null;
+
+function _cleanup(btn) {
+  running = false;
+  btn.disabled = false;
+  if (_activeEs) { _activeEs.close(); _activeEs = null; }
+}
+
+document.getElementById('run-btn').addEventListener('click', () => {
+  if (running) return;
+  running = true;
+
+  const n   = parseInt(nSlider.value);
+  const con = parseInt(cSlider.value);
+  const btn = document.getElementById('run-btn');
+  btn.disabled = true;
+
+  document.getElementById('results-table').style.display = 'none';
+  setStatus('Starting servers…', true);
+
+  if (_activeEs) { _activeEs.close(); _activeEs = null; }
+
+  const es = new EventSource(`/api/benchmark?n=${n}&concurrency=${con}`);
+  _activeEs = es;
+
+  es.onmessage = ({ data }) => {
+    const msg = JSON.parse(data);
+
+    if (msg.type === 'start') {
+      scenarios = msg.scenarios;
+      results   = {};
+      buildCards(scenarios, con);
+      initCharts(scenarios.map(s => s.id));
+      setStatus(`Running ${msg.n_requests} requests · ${msg.concurrency} concurrent (C & D)…`, true);
+    }
+
+    else if (msg.type === 'scenario_start') {
+      const sc = scenarios.find(s => s.id === msg.id);
+      setStatus(`▶  Running scenario ${msg.id} — ${sc?.name}…`, true);
+      setCardRunning(msg.id);
+    }
+
+    else if (msg.type === 'scenario_done') {
+      results[msg.id] = msg.metrics;
+      setCardDone(msg.id, msg.metrics);
+      updateCharts(msg.id, msg.metrics);
+    }
+
+    else if (msg.type === 'complete') {
+      setStatus('✓  Benchmark complete', false);
+      buildTable(results);
+      _cleanup(btn);
+    }
+
+    else if (msg.type === 'error') {
+      setStatus(`✗  ${msg.message}`, false);
+      _cleanup(btn);
+    }
+  };
+
+  es.onerror = () => {
+    if (running) {
+      setStatus('✗  Connection error — is the server running?', false);
+      _cleanup(btn);
+    }
+  };
+});
+
+// ── INIT DEFAULT CARDS ────────────────────────────────────────────────────
+const DEFAULT_SCENARIOS = [
+  { id: 'A', name: 'Sync · Sequential',         detail: 'Blocking socket · one req at a time' },
+  { id: 'B', name: 'Async · Sequential',         detail: 'asyncio streams · still serial' },
+  { id: 'C', name: 'Async · Concurrent',         detail: '20 workers · regular orchestrator' },
+  { id: 'D', name: 'Async · Pooled + Concurrent',detail: '20 workers · LIFO connection pool' },
+];
+scenarios = DEFAULT_SCENARIOS;
+buildCards(DEFAULT_SCENARIOS, 20);
+initCharts(DEFAULT_SCENARIOS.map(s => s.id));
+</script>
+</body>
+</html>

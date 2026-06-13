@@ -1,13 +1,9 @@
-from .servers.orchestrator import Orchestrator
-from .servers.server import Server
-from .servers.transport import orchestrator_endpoint, shard_endpoint
+from stage4_async_aof.server import Server
 import multiprocessing
+import time
 import os
 import platform
 import asyncio
-
-
-SHARD_COUNT = 3
 
 def start_server_instance(host, port, node):
     """Function to create and start a single server instance."""
@@ -21,9 +17,8 @@ def start_server_instance(host, port, node):
     else:
         print(f"ℹ CPU affinity not supported on {platform.system()}")
     
-    endpoint = shard_endpoint(node)
-    print(f"Starting server shard {node} on internal endpoint {endpoint.describe()} (async event loop)")
-    server = Server(host=host, port=port, node=node, endpoint=endpoint)
+    print(f"Starting server shard {node} on {host}:{port} (async event loop)")
+    server = Server(host=host, port=port, node=node)
     asyncio.run(server.run())
     # Server.start() is now async and runs forever
 
@@ -34,11 +29,11 @@ if __name__ == '__main__':
     # List to hold references to the processes (changed from threads to processes)
     server_processes = [] 
     
-    print(f"🚀 Starting {SHARD_COUNT} shards with async event loops...")
+    print(f"🚀 Starting {3} shards with async event loops...")
     print(f"   Each shard = 1 process = 1 async event loop = lock-free")
     print(f"   Architecture: Dragonfly-inspired shard-per-core model\n")
     
-    for i in range(SHARD_COUNT):
+    for i in range(3):
         node = i
         port = base_port + i # Unique port for each instance
         
@@ -51,13 +46,15 @@ if __name__ == '__main__':
             )
         server_processes.append(process)
         process.start()
-
-    print(f"All server shards started. Client entrypoint => {orchestrator_endpoint().describe()}\n")
+        
+    # The main process must be kept alive
+    print("All server shards started. Press Ctrl+C to stop.\n")
     try:
-        asyncio.run(Orchestrator(shard_count=len(server_processes)).run())
+        # Keep the main thread alive indefinitely
+        while True:
+            time.sleep(1)
     except KeyboardInterrupt:
         print("\n🛑 Stopping servers...")
-    finally:
         # Terminate all processes
         for proc in server_processes:
             proc.terminate()
